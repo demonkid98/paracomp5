@@ -148,16 +148,9 @@ int main(int argc, char* argv[]) {
     memcpy(Bloc, Brecv, sizeof(int) * bsize * bsize);
   }
 
+  MPI_Gatherv(Cloc, bsize * bsize, MPI_INT, C, sendcounts, displ, sub_matrix2, 0, MPI_COMM_WORLD);
 
-  // test the result (locally), barrier to get the results sequentially
-  for (i = 0; i < size; i++) {
-    MPI_Barrier(grid_comm);
-    if (rank == i) {
-      printf("-- [%d] Result --\n", i);
-      print_array(Cloc, bsize);
-    }
-    MPI_Barrier(grid_comm);
-  }
-
+  // show result
+  if (rank == 0) print_array(C, N);
   MPI_Finalize();
 }
