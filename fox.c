@@ -5,16 +5,14 @@
 #include <unistd.h>
 
 #define NDIMS 2
-#define N 9
+#define N 6
 
-typedef int matrix[N][N];
-
-void print_array(matrix M, int size) {
+void print_array(int *M, int size) {
   register int i, j;
   printf("-----\n");
   for (i = 0; i < size; i++) {
     for (j = 0; j < size; j++) {
-      printf("%d ", M[i][j]);
+      printf("%d ", M[i * size + j]);
     }
     printf("\n");
   }
@@ -29,117 +27,112 @@ int main(int argc, char* argv[]) {
   int periods[NDIMS] = {1, 1};
   int coords[NDIMS];
 
-  matrix A, B, C;
-  matrix myA, Bbuffer;
 
-  MPI_Request req;
-  MPI_Status status;
+  MPI_Request send_req;
+  MPI_Request recv_req;
+  MPI_Status send_status;
+  MPI_Status recv_status;
 
   for (i = 0; i < NDIMS; i++) {
     dims[i] = 0;
   }
-  MPI_Comm new_comm, row_comm, col_comm;
+  MPI_Comm grid_comm, row_comm, col_comm;
 
   MPI_Init(&argc, &argv);
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
   MPI_Comm_size(MPI_COMM_WORLD, &size);
 
   MPI_Dims_create(size, NDIMS, dims);
-  MPI_Cart_create(MPI_COMM_WORLD, NDIMS, dims, periods, 0, &new_comm);
-  MPI_Comm_rank(new_comm, &nrank);
-  MPI_Cart_coords(new_comm, nrank, NDIMS, coords);
-  MPI_Cart_shift(new_comm, 0, 1, &uprank, &downrank);
+  MPI_Cart_create(MPI_COMM_WORLD, NDIMS, dims, periods, 0, &grid_comm);
+  MPI_Comm_rank(grid_comm, &nrank);
+  MPI_Cart_coords(grid_comm, nrank, NDIMS, coords);
+  MPI_Cart_shift(grid_comm, 0, 1, &uprank, &downrank);
 
   // printf("[%d] up %d down %d\n", rank, uprank, downrank);
 
   bsize = N / dims[0];
+  printf("dim %d bsize %d\n", dims[0], bsize);
 
-  // assume blocks are already in each process
-  for (i = 0; i < N; i++) {
-    for (j = 0; j < N; j++) {
-      C[i][j] = 0;
+  int Aloc[bsize * bsize];
+  int Bloc[bsize * bsize];
+  int Cloc[bsize * bsize];
+  int Abuf[bsize * bsize];
+  int Brecv[bsize * bsize];
 
-      if (coords[0] == i / bsize && coords[1] == j / bsize) {
-        // if (i == j) {
-        //   A[i][j] = i + 1;
-        //   B[i][j] = N - i;  
-        // } else {
-        //   A[i][j] = 0;
-        //   B[i][j] = 0;
-        // }
-        A[i][j] = rank + 1;
-        // B[i][j] = i + 1;
-        B[i][j] = 1;
-      } else {
-        A[i][j] = -1;
-        B[i][j] = -1;  
-      }
+  for (i = 0; i < bsize; i++) {
+    for (j = 0; j < bsize; j++) {
+      Aloc[i * bsize + j] = rank;
+      Bloc[i * bsize + j] = rank;
     }
   }
+  memset(Cloc, 0, sizeof(Cloc));
 
-  memcpy(myA, A, sizeof(int) * N * N);
-  memcpy(Bbuffer, B, sizeof(int) * N * N);  
-
-  int row_remain_dims[NDIMS] = {1, 0};
-  MPI_Cart_sub(new_comm, row_remain_dims, &row_comm);
-  int col_remain_dims[NDIMS] = {0, 1};
-  MPI_Cart_sub(new_comm, col_remain_dims, &col_comm);
-
-  int i0, j0;
-  i0 = coords[0] * bsize;
-  j0 = coords[1] * bsize;
-  // printf("[%d][%d] %d %d\n", coords[0], coords[1], i0, j0);
+  int row_remain_dims[NDIMS] = {0, 1};
+  MPI_Cart_sub(grid_comm, row_remain_dims, &row_comm);
+  int col_remain_dims[NDIMS] = {1, 0};
+  MPI_Cart_sub(grid_comm, col_remain_dims, &col_comm);
 
   for (k = 0; k < dims[0]; k++) {
-    // bcast k-th diag    
-    for (i = 0; i < N; i++) {
-      // FIXME only broadcast on row
-      int root = i / bsize;
-      root = root * dims[1] + ((root + k) % dims[1]);
-      int j0 = ((i / bsize + k) % dims[1]) * bsize;
+    // start shifting B async
+    // data is sent to a temporary buffer and copied back later
+    for (i = 0; i < bsize; i++) {
+      MPI_Isend(Bloc, bsize * bsize, MPI_INT, uprank, k * nrank, grid_comm, &send_req);
+      MPI_Irecv(Brecv, bsize * bsize, MPI_INT, downrank, k * downrank, grid_comm, &recv_req);
+    }
 
-      MPI_Bcast(&A[i][j0], bsize, MPI_INT, root, MPI_COMM_WORLD);
-      for (j = 0; j < dims[1]; j++) {
-        memcpy(&A[i][j * bsize], &A[i][j0], sizeof(int) * bsize);
+    // bcast A row-wise
+    // each row
+    for (i = 0; i < dims[0]; i++) {
+      if (i != coords[0]) {
+        continue;
       }
+      int row_rank;
+      MPI_Comm_rank(row_comm, &row_rank);
+
+      // root of bcast row-wise: [i][(i + k) mod dims[0]]
+      int root_col = (i + k) % dims[0];
+      int root_coords[NDIMS] = {i, (i + k) % dims[0]};
+      int root;
+      MPI_Cart_rank(grid_comm, root_coords, &root);
+
+      if (rank == root) {
+        memcpy(Abuf, Aloc, sizeof(int) * bsize * bsize);
+      }
+
+      MPI_Bcast(Abuf, bsize * bsize, MPI_INT, root_col, row_comm);
     }
 
     // local compute
-    for (i = i0; i < i0 + bsize; i++) {
-      for (j = j0; j < j0 + bsize; j++) {
-        // C[i][j]
+    for (i = 0; i < bsize; i++) {
+      for (j = 0; j < bsize; j++) {
+        // Cloc[i][j]
         for (l = 0; l < bsize; l++) {
-          C[i][j] = C[i][j] + A[i][j0 + l] * B[i0 + l][j];
+          Cloc[i * bsize + j] = Cloc[i * bsize + j] + Abuf[i * bsize + l] * Bloc[l * bsize + j];
         }
       }
     }
 
-    // restore A
-    memcpy(A, myA, sizeof(int) * N * N);
-
-    // shift B
-    for (i = i0; i < i0 + bsize; i++) {
-      memcpy(&Bbuffer[i][j0], &B[i][j0], sizeof(int) * bsize);
-      MPI_Irecv(&Bbuffer[i][j0], bsize, MPI_INT, downrank, k * downrank, new_comm, &req);
-      MPI_Send(&B[i][j0], bsize, MPI_INT, uprank, k * nrank, new_comm);
-      MPI_Wait(&req, &status);
+    // wait for shift B
+    for (i = 0; i < bsize; i++) {
+      MPI_Wait(&send_req, &send_status);
+      MPI_Wait(&recv_req, &recv_status);
     }
 
     // barrier to ensure all data are transferred to the target buffer completely
     // before copying to B
-    MPI_Barrier(new_comm);
-    for (i = i0; i < i0 + bsize; i++) {
-      memcpy(&B[i][j0], &Bbuffer[i][j0], sizeof(int) * bsize);
-    }
+    MPI_Barrier(grid_comm);
+    memcpy(Bloc, Brecv, sizeof(int) * bsize * bsize);
   }
 
+
+  // test the result (locally), barrier to get the results sequentially
   for (i = 0; i < size; i++) {
-    MPI_Barrier(new_comm);
+    MPI_Barrier(grid_comm);
     if (rank == i) {
-      printf("[%d]-- Result --\n", i);
-      print_array(C, N);
+      printf("-- [%d] Result --\n", i);
+      print_array(Cloc, bsize);
     }
-    MPI_Barrier(new_comm);
+    MPI_Barrier(grid_comm);
   }
 
   // no gather at the end
