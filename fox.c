@@ -51,7 +51,6 @@ int main(int argc, char* argv[]) {
   // printf("[%d] up %d down %d\n", rank, uprank, downrank);
 
   bsize = N / dims[0];
-  printf("dim %d bsize %d\n", dims[0], bsize);
 
   int Aloc[bsize * bsize];
   int Bloc[bsize * bsize];
@@ -75,10 +74,8 @@ int main(int argc, char* argv[]) {
   for (k = 0; k < dims[0]; k++) {
     // start shifting B async
     // data is sent to a temporary buffer and copied back later
-    for (i = 0; i < bsize; i++) {
-      MPI_Isend(Bloc, bsize * bsize, MPI_INT, uprank, k * nrank, grid_comm, &send_req);
-      MPI_Irecv(Brecv, bsize * bsize, MPI_INT, downrank, k * downrank, grid_comm, &recv_req);
-    }
+    MPI_Isend(Bloc, bsize * bsize, MPI_INT, uprank, k * nrank, grid_comm, &send_req);
+    MPI_Irecv(Brecv, bsize * bsize, MPI_INT, downrank, k * downrank, grid_comm, &recv_req);
 
     // bcast A row-wise
     // each row
@@ -113,10 +110,8 @@ int main(int argc, char* argv[]) {
     }
 
     // wait for shift B
-    for (i = 0; i < bsize; i++) {
-      MPI_Wait(&send_req, &send_status);
-      MPI_Wait(&recv_req, &recv_status);
-    }
+    MPI_Wait(&send_req, &send_status);
+    MPI_Wait(&recv_req, &recv_status);
 
     // barrier to ensure all data are transferred to the target buffer completely
     // before copying to B
