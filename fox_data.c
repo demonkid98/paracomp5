@@ -34,6 +34,7 @@ int main(int argc, char* argv[]) {
   MPI_Status recv_status;
 
   MPI_Datatype sub_matrix;
+  MPI_Datatype sub_matrix2;
 
   for (i = 0; i < NDIMS; i++) {
     dims[i] = 0;
@@ -62,15 +63,15 @@ int main(int argc, char* argv[]) {
 
   MPI_Type_vector(bsize, bsize, N, MPI_INT, &sub_matrix);
   MPI_Type_commit(&sub_matrix);
-
+  // resize type to allow data interleaving (i.e. in same row group)
+  MPI_Type_create_resized(sub_matrix, 0, sizeof(int), &sub_matrix2);
+  MPI_Type_commit(&sub_matrix2);
 
   for (i = 0; i < size; i++) {
     sendcounts[i] = 1;
     int i1 = i / dims[0];
     int i2 = i % dims[0];
-    // displ[i] = i1 * bsize * N + i2 * bsize;
-    displ[i] = 1;
-    // printf("[%d] displ %d\n", i, displ[i]);
+    displ[i] = i1 * bsize * N + i2 * bsize;
   }
 
   int Aloc[bsize * bsize];
@@ -95,10 +96,9 @@ int main(int argc, char* argv[]) {
     }
   }
 
-  // TODO not working yet!
-  MPI_Scatterv(&A[0], sendcounts, displ, sub_matrix, Aloc, bsize * bsize, MPI_INT, 0, MPI_COMM_WORLD);
-  // if (rank == 1)
-    print_array(Aloc, bsize);
+  MPI_Scatterv(A, sendcounts, displ, sub_matrix2, Aloc, bsize * bsize, MPI_INT, 0, MPI_COMM_WORLD);
+  MPI_Scatterv(B, sendcounts, displ, sub_matrix2, Bloc, bsize * bsize, MPI_INT, 0, MPI_COMM_WORLD);
+  // if (rank == 3) print_array(Bloc, bsize);
 
 
   MPI_Finalize();
