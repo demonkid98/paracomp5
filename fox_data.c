@@ -99,7 +99,65 @@ int main(int argc, char* argv[]) {
   MPI_Scatterv(A, sendcounts, displ, sub_matrix2, Aloc, bsize * bsize, MPI_INT, 0, MPI_COMM_WORLD);
   MPI_Scatterv(B, sendcounts, displ, sub_matrix2, Bloc, bsize * bsize, MPI_INT, 0, MPI_COMM_WORLD);
   // if (rank == 3) print_array(Bloc, bsize);
+ 
+  for (k = 0; k < dims[0]; k++) {
+    // start shifting B async
+    // data is sent to a temporary buffer and copied back later
+    MPI_Isend(Bloc, bsize * bsize, MPI_INT, uprank, k * nrank, grid_comm, &send_req);
+    MPI_Irecv(Brecv, bsize * bsize, MPI_INT, downrank, k * downrank, grid_comm, &recv_req);
 
+    // bcast A row-wise
+    // each row
+    for (i = 0; i < dims[0]; i++) {
+      if (i != coords[0]) {
+        continue;
+      }
+      int row_rank;
+      MPI_Comm_rank(row_comm, &row_rank);
+
+      // root of bcast row-wise: [i][(i + k) mod dims[0]]
+      int root_col = (i + k) % dims[0];
+      int root_coords[NDIMS] = {i, (i + k) % dims[0]};
+      int root;
+      MPI_Cart_rank(grid_comm, root_coords, &root);
+
+      if (rank == root) {
+        memcpy(Abuf, Aloc, sizeof(int) * bsize * bsize);
+      }
+
+      MPI_Bcast(Abuf, bsize * bsize, MPI_INT, root_col, row_comm);
+    }
+
+    // local compute
+    for (i = 0; i < bsize; i++) {
+      for (j = 0; j < bsize; j++) {
+        // Cloc[i][j]
+        for (l = 0; l < bsize; l++) {
+          Cloc[i * bsize + j] = Cloc[i * bsize + j] + Abuf[i * bsize + l] * Bloc[l * bsize + j];
+        }
+      }
+    }
+
+    // wait for shift B
+    MPI_Wait(&send_req, &send_status);
+    MPI_Wait(&recv_req, &recv_status);
+
+    // barrier to ensure all data are transferred to the target buffer completely
+    // before copying to B
+    MPI_Barrier(grid_comm);
+    memcpy(Bloc, Brecv, sizeof(int) * bsize * bsize);
+  }
+
+
+  // test the result (locally), barrier to get the results sequentially
+  for (i = 0; i < size; i++) {
+    MPI_Barrier(grid_comm);
+    if (rank == i) {
+      printf("-- [%d] Result --\n", i);
+      print_array(Cloc, bsize);
+    }
+    MPI_Barrier(grid_comm);
+  }
 
   MPI_Finalize();
 }
