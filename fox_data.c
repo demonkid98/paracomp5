@@ -5,7 +5,7 @@
 #include <unistd.h>
 
 #define NDIMS 2
-#define N 6
+#define N 1024
 
 void print_array(int *M, int size) {
   register int i, j;
@@ -52,9 +52,9 @@ int main(int argc, char* argv[]) {
   MPI_Cart_shift(grid_comm, 0, 1, &uprank, &downrank);
 
   // printf("[%d] up %d down %d\n", rank, uprank, downrank);
-  int A[N * N];
-  int B[N * N];
-  int C[N * N];
+  static int A[N * N];
+  static int B[N * N];
+  static int C[N * N];
 
   int sendcounts[size];
   int displ[size];
@@ -90,8 +90,10 @@ int main(int argc, char* argv[]) {
   if (rank == 0) {
     for (i = 0; i < N; i++) {
       for (j = 0; j < N; j++) {
-        A[i * N + j] = i * N + j;
-        B[i * N + j] = i * N + j;
+        // A[i * N + j] = i * N + j;
+        // B[i * N + j] = i * N + j;
+        A[i * N + j] = i;
+        B[i * N + j] = j;
       }
     }
   }
